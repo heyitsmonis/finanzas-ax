@@ -1001,9 +1001,32 @@ function categoriesSummary(targetYM=selectedYM()){
 function statementPaymentKey(cardId,targetYM){return `${cardId}|${targetYM}`}
 function isOccurrenceCardPaid(o){return (o.movement.legacyPaidYMs||[]).includes(o.paymentYM)||state.statementPayments.some(p=>p.cardId===o.movement.cardId&&p.paymentYM===o.paymentYM)}
 function paidInstallments(m){if(m.type!=='months')return 0;return movementOccurrences(m).filter(o=>isOccurrenceCardPaid(o)).length}
+function personPaidForOccurrence(pid,movementId,paymentYM){
+  return (state.personPayments||[]).filter(pay=>pay.personId===pid).reduce((sum,pay)=>sum+paymentAllocationFor(pay,movementId,paymentYM),0);
+}
+function occurrenceDisplayPaymentStatus(inst,pid=null){
+  const sh=sharesForOccurrence(inst),own=sh.owner||ownershipAt(inst.movement,inst.paymentYM);
+  if(pid){
+    const belongs=own.personId===pid&&(own.ownerType==='third'||own.ownerType==='shared')&&sh.third>.005;
+    if(!belongs)return {covered:false,partial:false,label:'No corresponde a esta persona'};
+    const paid=personPaidForOccurrence(pid,inst.movement.id,inst.paymentYM);
+    const covered=paid+0.005>=sh.third,partial=paid>.005&&!covered;
+    return {covered,partial,label:covered?'Cubierto por la persona':partial?`Pago parcial ${money(paid)} de ${money(sh.third)}`:'Pendiente'};
+  }
+  if(sh.third>.005){
+    const paid=thirdPaymentsForMovement(inst.movement.id,inst.paymentYM),covered=paid+0.005>=sh.third,partial=paid>.005&&!covered;
+    return {covered,partial,label:covered?'Terceros cubiertos':partial?`Pago parcial de terceros ${money(paid)} de ${money(sh.third)}`:'Pendiente de terceros'};
+  }
+  const covered=isOccurrenceCardPaid(inst);
+  return {covered,partial:false,label:covered?'Pagado':'Pendiente'};
+}
 function installmentMonthsHTML(m,currentIndex){
   if(m.type!=='months')return '<span class="installment-empty">—</span>';
-  return `<div class="installment-strip" aria-label="Mensualidades">${movementOccurrences(m).map(inst=>{const paid=isOccurrenceCardPaid(inst),mi=parseYM(inst.paymentYM).month;return `<span class="installment-month${paid?' paid':''}${inst.index===currentIndex?' current':''}" title="${MONTH_NAMES[mi]} · ${inst.index}/${m.installments}${paid?' · Pagado':' · Pendiente'}"><span class="m-label">${MONTHS[mi]}</span><span class="m-check">${paid?'✓':'·'}</span></span>`}).join('')}</div>`;
+  return `<div class="installment-strip" aria-label="Mensualidades">${movementOccurrences(m).map(inst=>{const st=occurrenceDisplayPaymentStatus(inst),mi=parseYM(inst.paymentYM).month;return `<span class="installment-month${st.covered?' paid':''}${inst.index===currentIndex?' current':''}" title="${MONTH_NAMES[mi]} · ${inst.index}/${m.installments} · ${st.label}"><span class="m-label">${MONTHS[mi]}</span><span class="m-check">${st.covered?'✓':st.partial?'◐':'·'}</span></span>`}).join('')}</div>`;
+}
+function personInstallmentMonthsHTML(m,currentIndex,pid){
+  if(m.type!=='months')return '<span class="installment-empty">—</span>';
+  return `<div class="installment-strip" aria-label="Mensualidades de la persona">${movementOccurrences(m).map(inst=>{const st=occurrenceDisplayPaymentStatus(inst,pid),mi=parseYM(inst.paymentYM).month;return `<span class="installment-month${st.covered?' paid':''}${inst.index===currentIndex?' current':''}" title="${MONTH_NAMES[mi]} · ${inst.index}/${m.installments} · ${st.label}"><span class="m-label">${MONTHS[mi]}</span><span class="m-check">${st.covered?'✓':st.partial?'◐':'·'}</span></span>`}).join('')}</div>`;
 }
 
 function renderNav(){
@@ -1310,7 +1333,7 @@ function personDetailView(pid){
   const tabs=`<div class="tabs person-account-tabs"><button data-person-tab="month" class="${ui.personTab==='month'?'active':''}">Cuenta del mes</button><button data-person-tab="history" class="${ui.personTab==='history'?'active':''}">Historial</button></div>`;
   const head=`${pageHead(esc(p.name),`${p.archived?'Persona archivada · ': 'Cuenta de persona · '}${monthLabel(state.ui.year,state.ui.month)}`,`<button class="btn secondary" id="backPeople">← Personas</button>`)}${tabs}`;
   if(ui.personTab==='history')return `<div class="person-detail-page">${head}<div class="section-title person-history-title"><h2>Historial con ${esc(p.name)}</h2><span class="hint">Pagos, saldos asumidos, liquidaciones y recuperaciones</span></div>${personHistoryView(pid)}</div>`;
-  const rows=obs.map(o=>{const m=o.movement,c=cardById(m.cardId),cat=categoryById(m.categoryId),remain=Math.max(0,o.third-o.paid-o.assumed),linkedPays=personPaymentsForOccurrence(pid,m.id,o.paymentYM);const paidAction=o.paid>.005?(linkedPays.length===1?`<button type="button" class="person-inline-payment-edit" data-edit-obligation-payment="${linkedPays[0].id}" title="Editar este pago">${money(o.paid)} <span>Editar</span></button>`:`<button type="button" class="person-inline-payment-edit" data-view-obligation-payments="${m.id}" data-payment-ym="${o.paymentYM}">${money(o.paid)} <span>Ver pagos</span></button>`):`<strong>${money(o.paid)}</strong>`;return `<div class="movement-row person-obligation-row" data-movement="${m.id}" data-occ="${o.index}"><div class="mov-main"><div class="mov-title">${esc(m.concept)}</div><div class="mov-meta"><span>${cat?.icon||'📦'} ${esc(cat?.name||'Sin categoría')}</span><span>·</span><span>${dateMx(o.chargeDate)}</span><span>· Se paga ${dateMx(o.dueDate)}</span></div></div><div class="mov-card-slot">${logoHTML(c)}</div><div class="movement-type-cell"><span class="tag ${m.type}">${typeLabel(m.type)}</span></div><div class="installment-cell person-obligation-installments">${m.type==='months'?`<span class="installment-fraction">${o.index}/${m.installments}</span>`:''}${installmentMonthsHTML(m,o.index)}</div><div class="person-money-cell"><strong>${money(o.third)}</strong></div><div class="person-money-cell">${paidAction}</div><div class="amount person-pending-cell">${money(remain)}<small>${remain>.005?'Pendiente':'Cubierto ✓'}</small></div></div>`}).join('');
+  const rows=obs.map(o=>{const m=o.movement,c=cardById(m.cardId),cat=categoryById(m.categoryId),remain=Math.max(0,o.third-o.paid-o.assumed),linkedPays=personPaymentsForOccurrence(pid,m.id,o.paymentYM);const paidAction=o.paid>.005?(linkedPays.length===1?`<button type="button" class="person-inline-payment-edit" data-edit-obligation-payment="${linkedPays[0].id}" title="Editar este pago">${money(o.paid)} <span>Editar</span></button>`:`<button type="button" class="person-inline-payment-edit" data-view-obligation-payments="${m.id}" data-payment-ym="${o.paymentYM}">${money(o.paid)} <span>Ver pagos</span></button>`):`<strong>${money(o.paid)}</strong>`;return `<div class="movement-row person-obligation-row" data-movement="${m.id}" data-occ="${o.index}"><div class="mov-main"><div class="mov-title">${esc(m.concept)}</div><div class="mov-meta"><span>${cat?.icon||'📦'} ${esc(cat?.name||'Sin categoría')}</span><span>·</span><span>${dateMx(o.chargeDate)}</span><span>· Se paga ${dateMx(o.dueDate)}</span></div></div><div class="mov-card-slot">${logoHTML(c)}</div><div class="movement-type-cell"><span class="tag ${m.type}">${typeLabel(m.type)}</span></div><div class="installment-cell person-obligation-installments">${m.type==='months'?`<span class="installment-fraction">${o.index}/${m.installments}</span>`:''}${personInstallmentMonthsHTML(m,o.index,pid)}</div><div class="person-money-cell"><strong>${money(o.third)}</strong></div><div class="person-money-cell">${paidAction}</div><div class="amount person-pending-cell">${money(remain)}<small>${remain>.005?'Pendiente':'Cubierto ✓'}</small></div></div>`}).join('');
   return `<div class="person-detail-page">${head}
   <div class="notice person-month-notice">${iconCalendar}<span><strong>Vista del mes seleccionado.</strong> Aquí solo aparecen las obligaciones que corresponden pagar en ${monthLabel(state.ui.year,state.ui.month)}.</span></div>
   <div class="grid3 person-detail-summary"><div class="card metric person-metric person-metric-pending"><div class="label"><span class="summary-icon">${iconPending}</span>Pendiente de ${esc(p.name)} este mes</div><div class="value">${money(pending)}</div></div><div class="card metric person-metric person-metric-paid"><div class="label"><span class="summary-icon">${iconPaid}</span>Recibido de ${esc(p.name)} este mes</div><div class="value">${money(paid)}</div></div><div class="card metric person-metric person-metric-assumed"><div class="label"><span class="summary-icon">${iconAssumed}</span>Asumido por mí este mes</div><div class="value">${money(assumed)}</div></div></div>
@@ -1592,7 +1615,7 @@ function openMovementDetail(mid,occIndex){
   const m=state.movements.find(x=>x.id===mid);if(!m)return;
   const occs=movementOccurrences(m),o=occs.find(x=>x.index===occIndex)||occs[0];
   const sh=sharesForOccurrence(o),cov=thirdCoverageForOccurrence(o),c=cardById(m.cardId),cat=categoryById(m.categoryId);
-  const bankPaid=isOccurrenceCardPaid(o),paid=m.type==='months'?paidInstallments(m):null;
+  const bankPaid=isOccurrenceCardPaid(o),paid=m.type==='months'?movementOccurrences(m).filter(inst=>occurrenceDisplayPaymentStatus(inst).covered).length:null;
   const thirdPersonId=sh.owner?.personId||null,thirdPerson=thirdPersonId?personById(thirdPersonId):null;
   const linkedThirdPayments=thirdPersonId?personPaymentsForOccurrence(thirdPersonId,m.id,o.paymentYM):[];
   const paymentEditIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>';
@@ -1607,7 +1630,7 @@ function openMovementDetail(mid,occIndex){
   const detailIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11h6M9 15h6"/><path d="M7 3h10a2 2 0 0 1 2 2v16H5V5a2 2 0 0 1 2-2Z"/><path d="M9 7h6"/></svg>';
   const peopleIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>';
   const monthsIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 8 4-8 4-8-4 8-4Z"/><path d="m4 10 8 4 8-4"/><path d="m4 14 8 4 8-4"/></svg>';
-  const monthBoxes=m.type==='months'?occs.map(inst=>{const isPaid=isOccurrenceCardPaid(inst),mi=parseYM(inst.paymentYM).month;return `<span class="installment-month${isPaid?' paid':''}${inst.index===o.index?' current':''}" title="${MONTH_NAMES[mi]} · ${inst.index}/${m.installments}${isPaid?' · Pagado':' · Pendiente'}"><span class="m-label">${MONTHS[mi]}</span><span class="m-check">${isPaid?'✓':'·'}</span></span>`}).join(''):'';
+  const monthBoxes=m.type==='months'?occs.map(inst=>{const st=occurrenceDisplayPaymentStatus(inst),mi=parseYM(inst.paymentYM).month;return `<span class="installment-month${st.covered?' paid':''}${inst.index===o.index?' current':''}" title="${MONTH_NAMES[mi]} · ${inst.index}/${m.installments} · ${st.label}"><span class="m-label">${MONTHS[mi]}</span><span class="m-check">${st.covered?'✓':st.partial?'◐':'·'}</span></span>`}).join(''):'';
   const body=`
     <div class="movement-detail-hero ${m.type}">
       <div>
